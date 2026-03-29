@@ -54,11 +54,16 @@ local assdraw = require "mp.assdraw"
 
 local opt = require 'mp.options'
 
+local has_mp_input = (mp.input ~= nil)
+local using_native_input = false
+local ime_active = false
+
 local repl_active = false
 local insert_mode = false
 local line = ''
 local cursor = 1
 local key_hints_enabled = false
+local key_bindings = {}
 
 non_us_chars = {
     'А','а',
@@ -458,8 +463,8 @@ function update()
     return
 end
 
-function input_ass()
-    if not repl_active then
+function input_ass() 
+    if using_native_input or not repl_active then
         return ""
     end
     last_chat_time = mp.get_time() -- to keep chat messages showing while entering input
@@ -549,6 +554,116 @@ function escape()
     clear()
 end
 
+
+function trim_input()
+-- Naive helper function to find the next UTF-8 character in 'str' after 'pos'
+-- by skipping continuation bytes. Assumes 'str' contains valid UTF-8.
+
+    local str = line
+    if str == nil or str == "" or str:len() <= opts['MaxChatMessageLength'] then
+        return
+    end
+    local pos = 0
+    local oldPos = -1
+    local chars = 0
+
+    repeat
+        oldPos = pos
+        pos = next_utf8(str, pos)
+        chars = chars + 1
+    until pos == oldPos or chars > opts['MaxChatMessageLength']
+    line = line:sub(1,pos-1)
+    if cursor > pos then
+        cursor = pos
+    end
+    return
+end
+
+-- Insert a character at the current cursor position (' '-'~', Shift+Enter)
+function handle_char_input(c)
+    if c == nil then return end
+    if c == "\\" then c = opts['backslashSubstituteCharacter'] end
+    if key_hints_enabled and (string.len(line) > 0 or opts['chatDirectInput'] == false) then
+        key_hints_enabled = false
+    end
+    set_active(true)
+    if insert_mode then
+        line = line:sub(1, cursor - 1) .. c .. line:sub(next_utf8(line, cursor))
+    else
+        line = line:sub(1, cursor - 1) .. c .. line:sub(cursor)
+    end
+    cursor = cursor + c:len()
+    trim_input()
+    update()
+end
+
+-- List of input bindings. This is a weird mashup between common GUI text-input
+-- bindings and readline bindings.
+
+local function get_bindings()
+    local bindings = {
+        { 'esc',         function() escape() end       },
+        { 'bs',          handle_backspace                       },
+        { 'shift+bs',    handle_backspace                       },
+        { 'del',         handle_del                             },
+        { 'shift+del',   handle_del                             },
+        { 'ins',         handle_ins                             },
+        { 'left',        function() prev_char() end             },
+        { 'right',       function() next_char() end             },
+        { 'up',          function() clear() end        },
+        { 'home',        go_home                                },
+        { 'end',         go_end                                 },
+        { 'ctrl+c',      clear                                  },
+        { 'ctrl+d',      maybe_exit                             },
+        { 'ctrl+k',      del_to_eol                             },
+        { 'ctrl+l',      clear_log_buffer                       },
+        { 'ctrl+u',      del_to_start                           },
+        { 'ctrl+v',      function() paste(true) end             },
+        { 'meta+v',      function() paste(true) end             },
+    }
+
+    for i = 0, 9 do
+        bindings[#bindings + 1] =
+            {"kp" .. i, function() handle_char_input("" .. i) end}
+    end
+
+    return bindings
+end
+
+local function text_input(info)
+    if info.key_text and (info.event == "press" or info.event == "down"
+                          or info.event == "repeat")
+    then
+        handle_char_input(info.key_text)
+    end
+end
+
+
+local function define_key_bindings()
+    if #key_bindings > 0 then
+        return
+    end
+    for _, bind in ipairs(get_bindings()) do
+        -- Generate arbitrary name for removing the bindings later.
+        local name = "_repl_" .. (#key_bindings + 1)
+        key_bindings[#key_bindings + 1] = name
+        mp.add_forced_key_binding(bind[1], name, bind[2], {repeatable = true})
+    end
+    mp.add_forced_key_binding("any_unicode", "_repl_text", text_input,
+        {repeatable = true, complex = true})
+    key_bindings[#key_bindings + 1] = "_repl_text"
+end
+
+local function undefine_key_bindings()
+    if #key_bindings == 0 then
+        return
+    end
+    for _, name in ipairs(key_bindings) do
+        mp.remove_key_binding(name)
+    end
+    key_bindings = {}
+end
+
 -- Set the REPL visibility (`, Esc)
 function set_active(active)
     if use_alpha_rows_for_chat == false then active = false end
@@ -557,8 +672,13 @@ function set_active(active)
         repl_active = true
         insert_mode = false
         mp.enable_key_bindings('repl-input', 'allow-hide-cursor+allow-vo-dragging')
+        define_key_bindings()
+        ime_active = mp.get_property_bool("input-ime")
+        mp.set_property_bool("input-ime", true)
     else
         repl_active = false
+        undefine_key_bindings()
+        mp.set_property_bool("input-ime", ime_active)
         mp.disable_key_bindings('repl-input')
     end
     if default_oscvisibility_state ~= "never" and opts['OscVisibilityChangeCompatible'] == true then
@@ -660,47 +780,6 @@ function wordwrapify_string(line)
 end
 
 
-function trim_input()
--- Naive helper function to find the next UTF-8 character in 'str' after 'pos'
--- by skipping continuation bytes. Assumes 'str' contains valid UTF-8.
-
-    local str = line
-    if str == nil or str == "" or str:len() <= opts['MaxChatMessageLength'] then
-        return
-    end
-    local pos = 0
-    local oldPos = -1
-    local chars = 0
-
-    repeat
-        oldPos = pos
-        pos = next_utf8(str, pos)
-        chars = chars + 1
-    until pos == oldPos or chars > opts['MaxChatMessageLength']
-    line = line:sub(1,pos-1)
-    if cursor > pos then
-        cursor = pos
-    end
-    return
-end
-
--- Insert a character at the current cursor position (' '-'~', Shift+Enter)
-function handle_char_input(c)
-    if c == nil then return end
-    if c == "\\" then c = opts['backslashSubstituteCharacter'] end
-    if key_hints_enabled and (string.len(line) > 0 or opts['chatDirectInput'] == false) then
-        key_hints_enabled = false
-    end
-    set_active(true)
-    if insert_mode then
-        line = line:sub(1, cursor - 1) .. c .. line:sub(next_utf8(line, cursor))
-    else
-        line = line:sub(1, cursor - 1) .. c .. line:sub(cursor)
-    end
-    cursor = cursor + c:len()
-    trim_input()
-    update()
-end
 
 -- Remove the character behind the cursor (Backspace)
 function handle_backspace()
@@ -744,6 +823,33 @@ function next_char(amount)
     update()
 end
 
+-- Send a chat line to the Python client via print-text
+function send_chat_line(text)
+    if text == nil or text == '' then
+        return
+    end
+    text = string.gsub(text, "\\", "\\\\")
+    text = string.gsub(text, "\"", "\\\"")
+    mp.command('print-text "<chat>'..text..'</chat>"')
+end
+
+-- Open native text input using mp.input.get() (mpv 0.39+)
+-- Supports IME composition for CJK and other input methods
+function open_native_input()
+    using_native_input = true
+    last_chat_time = mp.get_time()
+    mp.input.get({
+        prompt = opts['inputPromptStartCharacter'] .. " ",
+        submit = function(text)
+            send_chat_line(text)
+            using_native_input = false
+        end,
+        closed = function()
+            using_native_input = false
+        end,
+    })
+end
+
 -- Move the cursor to the previous character (Left)
 function prev_char(amount)
     cursor = prev_utf8(line, cursor)
@@ -767,6 +873,12 @@ end
 
 -- Run the current command and clear the line (Enter)
 function handle_enter()
+    -- if has_mp_input then
+    --     if not using_native_input then
+    --         open_native_input()
+    --     end
+    --     return
+    -- end
     if not repl_active then
         set_active(true)
         return
@@ -777,9 +889,7 @@ function handle_enter()
         return
     end
     key_hints_enabled = false
-    line = string.gsub(line,"\\", "\\\\")
-    line = string.gsub(line,"\"", "\\\"")
-    mp.command('print-text "<chat>'..line..'</chat>"')
+    send_chat_line(line)
     clear()
 end
 
@@ -862,114 +972,6 @@ function paste(clip)
     update()
 end
 
--- The REPL has pretty specific requirements for key bindings that aren't
--- really satisified by any of mpv's helper methods, since they must be in
--- their own input section, but they must also raise events on key-repeat.
--- Hence, this function manually creates an input section and puts a list of
--- bindings in it.
-function add_repl_bindings(bindings)
-    local cfg = ''
-    for i, binding in ipairs(bindings) do
-        local key = binding[1]
-        local fn = binding[2]
-        local name = '__repl_binding_' .. i
-        mp.add_forced_key_binding(nil, name, fn, 'repeatable')
-        cfg = cfg .. key .. ' script-binding ' .. mp.script_name .. '/' ..
-              name .. '\n'
-    end
-    mp.commandv('define-section', 'repl-input', cfg, 'force')
-end
-
-function add_repl_alpharow_bindings(bindings)
-    local cfg = ''
-    for i, binding in ipairs(bindings) do
-        local key = binding[1]
-        local fn = binding[2]
-        local name = '__repl_alpha_binding_' .. i
-        mp.add_forced_key_binding(nil, name, fn, 'repeatable')
-        cfg = cfg .. key .. ' script-binding ' .. mp.script_name .. '/' ..
-              name .. '\n'
-    end
-    mp.commandv('define-section', 'repl-alpha-input', cfg, 'force')
-    mp.enable_key_bindings('repl-alpha-input')
-end
-
--- Mapping from characters to mpv key names
-local binding_name_map = {
-    [' '] = 'SPACE',
-    ['#'] = 'SHARP',
-}
-
--- List of input bindings. This is a weird mashup between common GUI text-input
--- bindings and readline bindings.
-local bindings = {
-    { 'esc',         function() escape() end       },
-    { 'bs',          handle_backspace                       },
-    { 'shift+bs',    handle_backspace                       },
-    { 'del',         handle_del                             },
-    { 'shift+del',   handle_del                             },
-    { 'ins',         handle_ins                             },
-    { 'left',        function() prev_char() end             },
-    { 'right',       function() next_char() end             },
-    { 'up',          function() clear() end        },
-    { 'home',        go_home                                },
-    { 'end',         go_end                                 },
-    { 'ctrl+c',      clear                                  },
-    { 'ctrl+d',      maybe_exit                             },
-    { 'ctrl+k',      del_to_eol                             },
-    { 'ctrl+l',      clear_log_buffer                       },
-    { 'ctrl+u',      del_to_start                           },
-    { 'ctrl+v',      function() paste(true) end             },
-    { 'meta+v',      function() paste(true) end             },
-}
-local alpharowbindings = {}
--- Add bindings for all the printable US-ASCII characters from ' ' to '~'
--- inclusive. Note, this is a pretty hacky way to do text input. mpv's input
--- system was designed for single-key key bindings rather than text input, so
--- things like dead-keys and non-ASCII input won't work. This is probably okay
--- though, since all mpv's commands and properties can be represented in ASCII.
-for b = (' '):byte(), ('~'):byte() do
-    local c = string.char(b)
-    local binding = binding_name_map[c] or c
-    bindings[#bindings + 1] = {binding, function() handle_char_input(c) end}
-end
-
-function add_alpharowbinding(firstchar,lastchar)
-    for b = (firstchar):byte(), (lastchar):byte() do
-        local c = string.char(b)
-        local alphabinding = binding_name_map[c] or c
-        alpharowbindings[#alpharowbindings + 1] = {alphabinding, function() handle_char_input(c) end}
-    end
-end
-
-function add_specialalphabindings(charinput)
-    local alphabindingarray = charinput
-    for i, alphabinding in ipairs(alphabindingarray) do
-        alpharowbindings[#alpharowbindings + 1] = {alphabinding, function() handle_char_input(alphabinding) end }
-        bindings[#bindings + 1] = {alphabinding, function() handle_char_input(alphabinding) end}
-    end
-end
-
-add_alpharowbinding('a','z')
-add_alpharowbinding('A','Z')
-add_alpharowbinding('/','/')
-add_alpharowbinding(':',':')
-add_alpharowbinding('(',')')
-add_alpharowbinding('{','}')
-add_alpharowbinding(':',';')
-add_alpharowbinding('<','>')
-add_alpharowbinding(',','.')
-add_alpharowbinding('|','|')
-add_alpharowbinding('\\','\\')
-add_alpharowbinding('?','?')
-add_alpharowbinding('[',']')
-add_alpharowbinding('#','#')
-add_alpharowbinding('~','~')
-add_alpharowbinding('\'','\'')
-add_alpharowbinding('@','@')
-
-add_specialalphabindings(non_us_chars)
-add_repl_bindings(bindings)
 
 -- Add a script-message to show the REPL and fill it with the provided text
 mp.register_script_message('type', function(text)
@@ -991,7 +993,6 @@ function readyMpvAfterSettingsKnown()
             mp.add_forced_key_binding('enter', handle_enter)
             mp.add_forced_key_binding('kp_enter', handle_enter)
             if opts['chatDirectInput'] == true then
-                add_repl_alpharow_bindings(alpharowbindings)
                 mp.add_forced_key_binding('tab', handle_tab)
             end
         end
