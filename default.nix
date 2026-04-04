@@ -14,9 +14,6 @@ in
     pyproject = false;
 
     src = cleanSource ./.;
-    patches = [
-      ./trusted_certificates.patch
-    ];
 
     buildInputs = lib.optionals enableGUI [
       (

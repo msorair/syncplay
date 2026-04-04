@@ -862,6 +862,7 @@ class SyncplayClient(object):
         self._endpoint = HostnameEndpoint(reactor, host, port)
         try:
             certs = pem.parse_file(SSL_CERT_FILE)
+            certs = [cert for cert in certs if type(cert) is pem.Certificate]
             trustRoot = trustRootFromCertificates([Certificate.loadPEM(str(cert)) for cert in certs])
             self.protocolFactory.options = optionsForClientTLS(hostname=host, trustRoot=trustRoot)
             self._clientSupportsTLS = True
