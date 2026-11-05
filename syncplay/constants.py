@@ -385,7 +385,7 @@ SYNCPLAY_UPDATE_URL = "https://syncplay.pl/checkforupdate?{}"  # Params
 SYNCPLAY_DOWNLOAD_URL = "https://syncplay.pl/download/"
 SYNCPLAY_PUBLIC_SERVER_LIST_URL = "https://syncplay.pl/listpublicservers?{}"  # Params
 
-DEFAULT_TRUSTED_DOMAINS = ["youtube.com", "youtu.be"]
+DEFAULT_TRUSTED_DOMAINS = ["youtube.com", "youtu.be", "bilibili.com", "*.bilibili.com", "b23.tv", "bilivideo.com", "*.bilivideo.com", "bilili.com", "*.bilili.com"]
 TRUSTABLE_WEB_PROTOCOLS = ["http", "https"]
 
 PRIVATE_FILE_FIELDS = ["path"]

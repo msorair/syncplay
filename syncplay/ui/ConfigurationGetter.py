@@ -284,6 +284,10 @@ class ConfigurationGetter(object):
                 self._config[key] = {}
             elif isinstance(self._config[key], str):
                 self._config[key] = ast.literal_eval(self._config[key])
+            if key == "trustedDomains" and isinstance(self._config[key], list):
+                for defaultDomain in constants.DEFAULT_TRUSTED_DOMAINS:
+                    if defaultDomain not in self._config[key]:
+                        self._config[key].append(defaultDomain)
 
         for key in self._tristate:
             if self._config[key] == "True":
