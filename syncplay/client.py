@@ -453,11 +453,12 @@ class SyncplayClient(object):
         madeChangeOnPlayer = False
         pauseChanged = paused != self.getGlobalPaused() or paused != self.getPlayerPaused()
         diff = self.getPlayerPosition() - position
-        if self._lastGlobalUpdate is None:
-            madeChangeOnPlayer = self._initPlayerState(position, paused)
+        initialState = self._lastGlobalUpdate is None
         self._globalPaused = paused
         self._globalPosition = position
         self._lastGlobalUpdate = time.time()
+        if initialState:
+            madeChangeOnPlayer = self._initPlayerState(position, paused)
         if doSeek:
             madeChangeOnPlayer = self._serverSeeked(position, setBy)
         if diff > self._config['rewindThreshold'] and not doSeek and not self._config['rewindOnDesync'] == False:
@@ -579,8 +580,9 @@ class SyncplayClient(object):
         filename, size = self.__executePrivacySettings(filename, size)
         self.userlist.currentUser.setFile(filename, duration, size, path)
         self.sendFile()
-        if utils.isURL(path) and utils.isURL(filename) and self.sharedPlaylistIsEnabled() and filename not in self.playlist._playlist:
-            self.ui.addFileToPlaylist(filename)
+        if (utils.isURL(path) and utils.isURL(filename) and self.sharedPlaylistIsEnabled()
+                and filename not in self.playlist._playlist):
+            self.playlist.addToPlaylist(filename, select=True)
         self.playlist.changeToPlaylistIndexFromFilename(filename)
         self.playlist.doubleCheckForWatchedPreviousFile()
 
@@ -2140,15 +2142,17 @@ class SyncplayPlaylist():
             if self._client.isConnectedAndInARoom() and self._client.sharedPlaylistIsEnabled():
                 self._client._protocol and self._client._protocol.setPlaylist(files)
                 self.changeToPlaylistIndex(newIndex)
-                self._ui.setPlaylist(self._playlist, filename)
                 self._ui.showMessage(getMessage("playlist-contents-changed-notification").format(self._client.getUsername()))
+            self._ui.setPlaylist(self._playlist, filename)
         else:
             self._ui.setPlaylist(self._playlist)
             if username is not None:
                 self._ui.showMessage(getMessage("playlist-contents-changed-notification").format(username))
         self.doubleCheckForWatchedPreviousFile()
 
-    def addToPlaylist(self, file):
+    def addToPlaylist(self, file, select=False):
+        if select:
+            self.switchToNewPlaylistItem = True
         self.changePlaylist([*self._playlist, file])
 
     def deleteAtIndex(self, index):
