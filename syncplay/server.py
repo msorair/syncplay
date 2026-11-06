@@ -657,10 +657,14 @@ class Room(object):
 
     def setPlaylist(self, files, setBy=None):
         self._playlist = files
+        if setBy:
+            self._setBy = setBy
         self.writeToDb()
 
     def setPlaylistIndex(self, index, setBy=None):
         self._playlistIndex = index
+        if setBy:
+            self._setBy = setBy
         self.writeToDb()
 
     def getPlaylist(self):
@@ -710,10 +714,14 @@ class ControlledRoom(Room):
     def setPlaylist(self, files, setBy=None):
         if self.canControl(setBy) and playlistIsValid(files):
             self._playlist = files
+            if setBy:
+                self._setBy = setBy
 
     def setPlaylistIndex(self, index, setBy=None):
         if self.canControl(setBy):
             self._playlistIndex = index
+            if setBy:
+                self._setBy = setBy
 
     def canControl(self, watcher):
         return watcher.getName() in self._controllers

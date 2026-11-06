@@ -453,11 +453,12 @@ class SyncplayClient(object):
         madeChangeOnPlayer = False
         pauseChanged = paused != self.getGlobalPaused() or paused != self.getPlayerPaused()
         diff = self.getPlayerPosition() - position
-        if self._lastGlobalUpdate is None:
-            madeChangeOnPlayer = self._initPlayerState(position, paused)
+        initialState = self._lastGlobalUpdate is None
         self._globalPaused = paused
         self._globalPosition = position
         self._lastGlobalUpdate = time.time()
+        if initialState:
+            madeChangeOnPlayer = self._initPlayerState(position, paused)
         if doSeek:
             madeChangeOnPlayer = self._serverSeeked(position, setBy)
         if diff > self._config['rewindThreshold'] and not doSeek and not self._config['rewindOnDesync'] == False:
@@ -579,6 +580,9 @@ class SyncplayClient(object):
         filename, size = self.__executePrivacySettings(filename, size)
         self.userlist.currentUser.setFile(filename, duration, size, path)
         self.sendFile()
+        if (utils.isURL(path) and utils.isURL(filename) and self.sharedPlaylistIsEnabled()
+                and filename not in self.playlist._playlist):
+            self.playlist.addToPlaylist(filename, select=True)
         self.playlist.changeToPlaylistIndexFromFilename(filename)
         self.playlist.doubleCheckForWatchedPreviousFile()
 
@@ -1938,20 +1942,20 @@ class SyncplayPlaylist():
             else:
                 self._client.openFile(delayedLoadPath)
 
-    def changeToPlaylistIndex(self, index, username=None, resetPosition=False):
+    def changeToPlaylistIndex(self, index, username=None, resetPosition=False, fromServer=False):
         if self.loadDelayedPath(index):
             return
         if self._playlist is None or len(self._playlist) == 0:
             return
         if index is None:
             return
-        if username is None and not self._client.sharedPlaylistIsEnabled():
+        if username is None and not fromServer and not self._client.sharedPlaylistIsEnabled():
             return
         self._lastPlaylistIndexChange = time.time()
         if self._client.playerIsNotReady():
             if not self.addedChangeListCallback:
                 self.addedChangeListCallback = True
-                self._client.addPlayerReadyCallback(lambda x: self.changeToPlaylistIndex(index, username, resetPosition))
+                self._client.addPlayerReadyCallback(lambda x: self.changeToPlaylistIndex(index, username, resetPosition, fromServer=fromServer))
             return
         try:
             filename = self._playlist[index]
@@ -1961,7 +1965,7 @@ class SyncplayPlaylist():
                 self.lastOwnPlaylistIndexEchoTime = time.time()
             if not self._client.sharedPlaylistIsEnabled():
                 self._playlistIndex = index
-            if username is not None and self._client.userlist.currentUser.file and utils.sameFilename(filename, self._client.userlist.currentUser.file['name']):
+            if (username is not None or fromServer) and self._client.userlist.currentUser.file and utils.sameFilename(filename, self._client.userlist.currentUser.file['name']):
                 if not self.queuedIndexFilename or utils.sameFilename(self.queuedIndexFilename, filename):
                     self._playlistIndex = index
                     return
@@ -1972,7 +1976,7 @@ class SyncplayPlaylist():
             pass
 
         self._playlistIndex = index
-        if username is None:
+        if username is None and not fromServer:
             if self._client.isConnectedAndInARoom() and self._client.sharedPlaylistIsEnabled():
                 self._client.setPlaylistIndex(index)
                 filename = self._playlist[index]
@@ -1991,7 +1995,8 @@ class SyncplayPlaylist():
         elif index is not None:
             filename = self._playlist[index]
             self._ui.setPlaylistIndexFilename(filename)
-            self._ui.showMessage(getMessage("playlist-selection-changed-notification").format(username))
+            if username is not None:
+                self._ui.showMessage(getMessage("playlist-selection-changed-notification").format(username))
             self.switchToNewPlaylistIndex(index, resetPosition=resetPosition)
 
     def canSwitchToNextPlaylistIndex(self):
@@ -2109,7 +2114,7 @@ class SyncplayPlaylist():
             self._client.playlistMayNeedRestoring = False
             return self._client.sharedPlaylistIsEnabled() and self._playlist != None and files == [] and username == None and not self._playlistBufferIsFromOldRoom(self._client.userlist.currentUser.room)
 
-    def changePlaylist(self, files, username=None, resetIndex=False):
+    def changePlaylist(self, files, username=None, resetIndex=False, fromServer=False):
         if self.playlistNeedsRestoring(files, username):
             self._ui.showDebugMessage("Restoring playlist on reconnect...")
             files = self._playlist.copy()
@@ -2133,18 +2138,21 @@ class SyncplayPlaylist():
         self._updateUndoPlaylistBuffer(newPlaylist=files, newRoom=self._client.userlist.currentUser.room)
         self._playlist = files
 
-        if username is None:
+        if username is None and not fromServer:
             if self._client.isConnectedAndInARoom() and self._client.sharedPlaylistIsEnabled():
                 self._client._protocol and self._client._protocol.setPlaylist(files)
                 self.changeToPlaylistIndex(newIndex)
-                self._ui.setPlaylist(self._playlist, filename)
                 self._ui.showMessage(getMessage("playlist-contents-changed-notification").format(self._client.getUsername()))
+            self._ui.setPlaylist(self._playlist, filename)
         else:
             self._ui.setPlaylist(self._playlist)
-            self._ui.showMessage(getMessage("playlist-contents-changed-notification").format(username))
+            if username is not None:
+                self._ui.showMessage(getMessage("playlist-contents-changed-notification").format(username))
         self.doubleCheckForWatchedPreviousFile()
 
-    def addToPlaylist(self, file):
+    def addToPlaylist(self, file, select=False):
+        if select:
+            self.switchToNewPlaylistItem = True
         self.changePlaylist([*self._playlist, file])
 
     def deleteAtIndex(self, index):

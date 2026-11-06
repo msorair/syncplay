@@ -14,7 +14,7 @@ from syncplay.players.basePlayer import BasePlayer
 from syncplay.utils import getRuntimeDir, isURL, findResourcePath
 from syncplay.utils import isMacOS, isWindows, isASCII
 from syncplay.utils import playerPathExists
-from syncplay.vendor.python_mpv_jsonipc.python_mpv_jsonipc import MPV
+from syncplay.vendor.python_mpv_jsonipc.python_mpv_jsonipc import MPV, MPVError
 
 class MpvPlayer(BasePlayer):
     RE_VERSION = re.compile(r'.*mpv v?(\d+)\.(\d+)\.\d+.*')
@@ -306,7 +306,7 @@ class MpvPlayer(BasePlayer):
     def askForStatus(self):
         self._positionAsk.clear()
         self._pausedAsk.clear()
-        if not self._listener.isReadyForSend:
+        if not self._listener.isReadyForSend():
             self._client.ui.showDebugMessage("mpv not ready for update")
             return
 
@@ -376,6 +376,8 @@ class MpvPlayer(BasePlayer):
 
     def _loadFile(self, filePath):
         self._clearFileLoaded()
+        self._pendingSeekOffset = None
+        self._loadingStream = isURL(filePath)
         self._listener.sendLine(['loadfile', filePath], notReadyAfterThis=True)
 
     def setFeatures(self, featureList):
@@ -387,6 +389,13 @@ class MpvPlayer(BasePlayer):
                 "Did not seek as recently reset and {} below 'do not reset position' threshold".format(value))
             return
         self._position = max(value, 0)
+        if not self.fileLoaded:
+            # Preserve the requested seek relative to the room's advancing clock.
+            self._pendingSeekOffset = self._position - self._client.getGlobalPosition()
+            self._client.ui.showDebugMessage(
+                "File not loaded yet, deferring position set ({}) until file update...".format(self._position))
+            self.lastMPVPositionUpdate = time.time()
+            return
         self._client.ui.showDebugMessage(
             "Setting position to {}...".format(self._position))
         self._setProperty(self.POSITION_QUERY, "{}".format(value))
@@ -406,8 +415,8 @@ class MpvPlayer(BasePlayer):
         else:
             self._client.ui.showDebugMessage("Don't want to set paused to {}".format(self._client.getGlobalPaused()))
         if resetPosition == False:
-            self._client.ui.showDebugMessage("OpenFile setting position to global position: {}".format(self._client.getGlobalPosition()))
-            self.setPosition(self._client.getGlobalPosition())
+            # Use the latest room position in _onFileUpdate, after loading finishes.
+            self._position = self._client.getGlobalPosition()
         else:
             self._storePosition(0)
         # TO TRY: self._listener.setReadyToSend(False)
@@ -493,14 +502,19 @@ class MpvPlayer(BasePlayer):
     def _onFileUpdate(self):
         self._client.ui.showDebugMessage("File update")
         self.fileLoaded = True
+        self._loadingStream = False
         self.lastLoadedTime = time.time()
+        pendingSeekOffset = self._pendingSeekOffset
+        self._pendingSeekOffset = None
         self.reactor.callFromThread(self._client.updateFile, self._filename, self._duration, self._filepath)
-        if not (self._recentlyReset()):
+        if pendingSeekOffset is not None:
+            self.reactor.callFromThread(self.setPosition, self._client.getGlobalPosition() + pendingSeekOffset)
+        elif not (self._recentlyReset()):
             self._client.ui.showDebugMessage("onFileUpdate setting position to global position: {}".format(self._client.getGlobalPosition()))
             self.reactor.callFromThread(self.setPosition, self._client.getGlobalPosition())
         if self._paused != self._client.getGlobalPaused():
             self._client.ui.showDebugMessage("onFileUpdate setting position to global paused: {}".format(self._client.getGlobalPaused()))
-            self.reactor.callFromThread(self._client.getGlobalPaused)
+            self.reactor.callFromThread(self.setPaused, self._client.getGlobalPaused())
 
     def _fileIsLoaded(self, ignoreDelay=False):
         if ignoreDelay:
@@ -525,12 +539,14 @@ class MpvPlayer(BasePlayer):
     def _set_defaults(self):
         self._paused = None
         self._position = 0.0
+        self._pendingSeekOffset = None
         self._duration = None
         self._filename = None
         self._filepath = None
         self.quitReason = None
         self.lastLoadedTime = None
         self.fileLoaded = False
+        self._loadingStream = False
         self.delayedFilePath = None
 
     def _create_listener(self, playerPath, filePath, args):
@@ -692,7 +708,10 @@ class MpvPlayer(BasePlayer):
                 self.processSendQueue()
 
         def checkForReadinessOverride(self):
-            if self.lastNotReadyTime and time.time() - self.lastNotReadyTime > constants.MPV_MAX_NEWFILE_COOLDOWN_TIME:
+            cooldown = constants.MPV_MAX_NEWFILE_COOLDOWN_TIME
+            if getattr(self.__playerController, '_loadingStream', False):
+                cooldown += constants.STREAM_ADDITIONAL_IGNORE_TIME
+            if self.lastNotReadyTime and time.time() - self.lastNotReadyTime > cooldown:
                 self.setReadyToSend(True)
 
         def sendLine(self, line, notReadyAfterThis=None):
@@ -763,6 +782,8 @@ class MpvPlayer(BasePlayer):
                 self.__playerController._client.ui.showDebugMessage("player >> {}".format(line))
                 try:
                     self.mpvpipe.command(*line)
+                except MPVError as e:
+                    self.__playerController._client.ui.showDebugMessage("MPVError when sending {}: {}".format(line, e))
                 except Exception as e:
                     self.__playerController._client.ui.showDebugMessage("CANNOT SEND {} DUE TO {}".format(line, e))
                     self.stop_client()

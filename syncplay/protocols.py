@@ -214,9 +214,9 @@ class SyncClientProtocol(JSONCommandProtocol):
                 if not self.hadFirstPlaylistIndex:
                     self.hadFirstPlaylistIndex = True
                     resetPosition = False
-                self._client.playlist.changeToPlaylistIndex(values['index'], user, resetPosition=resetPosition)
+                self._client.playlist.changeToPlaylistIndex(values['index'], user, resetPosition=resetPosition, fromServer=True)
             elif command == "playlistChange":
-                self._client.playlist.changePlaylist(values['files'], values['user'])
+                self._client.playlist.changePlaylist(values['files'], values['user'], fromServer=True)
             elif command == "features":
                 self._client.setUserFeatures(values["username"], values['features'])
 
